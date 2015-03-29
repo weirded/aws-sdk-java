@@ -49,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLHandshakeException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -462,6 +463,29 @@ public class AmazonHttpClient {
                     p);
                 if (response != null)
                     return response;
+            } catch (SSLHandshakeException ssl) {
+              if (ssl.getMessage().contains("server certificate change is restrictedduring renegotiation")) {
+                log.error("Encountered fatal SSLHandshakeException (SUMO HACK): " + ssl.getMessage(), ssl);
+                throw new FatalSSLHandshakeStateException("Encountered fatal SSLHandshakeException (SUMO HACK)", ssl);
+              } else {
+                if (log.isInfoEnabled()) {
+                    log.info("Unable to execute HTTP request: " + ssl.getMessage(), ssl);
+                }
+                captureExceptionMetrics(ssl, awsRequestMetrics);
+                awsRequestMetrics.addProperty(AWSRequestID, null);
+                AmazonClientException ace = new AmazonClientException(
+                        "Unable to execute HTTP request: " + ssl.getMessage(),
+                    ssl);
+                if (!shouldRetry(request.getOriginalRequest(),
+                                p.apacheRequest,
+                                ace,
+                                p.requestCount,
+                                config.getRetryPolicy())) {
+                    throw lastReset(ace, request);
+                }
+                // Cache the retryable exception
+                p.retriedException = ace;
+              }
             } catch (IOException ioe) {
                 if (log.isInfoEnabled()) {
                     log.info("Unable to execute HTTP request: " + ioe.getMessage(), ioe);
@@ -1241,4 +1265,10 @@ public class AmazonHttpClient {
     static void configUnreliableTestConditions(UnreliableTestConfig config) {
         unreliableTestConfig = config;
     }
+
+  public static class FatalSSLHandshakeStateException extends AmazonClientException {
+    public FatalSSLHandshakeStateException(String message, SSLHandshakeException t) {
+      super(message, t);
+    }
+  }
 }
